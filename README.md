@@ -2,13 +2,46 @@
 
 A self-hosted Linux monitoring stack with Docker Compose, automatic Grafana **Flux** datasource and Linux dashboard provisioning, persistent storage, and optional HTTPS reverse proxy (Caddy).
 
-## Architecture
+## Architecture and network topology
 
-```text
-Linux host --> Telegraf --> InfluxDB 2.x <-- Grafana <-- Caddy (optional) <-- Internet
+```mermaid
+flowchart TD
+    U["Internet user"] -->|"HTTPS TCP 443 / HTTP TCP 80"| F["Host firewall / published ports"]
+    A["Administrator"] -->|"SSH tunnel"| L["Host loopback"]
+    subgraph H["Linux Docker host"]
+        M["Host metrics: CPU, RAM, disk, network"]
+        L
+        subgraph N["Docker bridge: monitoring"]
+            C["Caddy :80 / :443 - optional public profile"]
+            G["Grafana :3000"]
+            T["Telegraf - collector"]
+            I["InfluxDB :8086"]
+            C -->|"HTTP :3000"| G
+            G -->|"Flux query / HTTP :8086"| I
+            T -->|"Write metrics / HTTP :8086"| I
+        end
+        M -->|"Read-only host mounts"| T
+        L -->|"127.0.0.1:3000"| G
+        L -->|"127.0.0.1:8086"| I
+        G --- GV[("grafana_data")]
+        I --- IV[("influxdb_data / influxdb_config")]
+        C --- CV[("caddy_data / caddy_config")]
+    end
+    F --> C
 ```
 
-By default Grafana binds to **127.0.0.1:3000** and InfluxDB to **127.0.0.1:8086**. Telegraf has no public port. The optional `public` profile publishes **only Grafana** through Caddy (HTTPS).
+### Connection matrix
+
+| Source | Destination | Protocol / default port | Purpose |
+|---|---|---|---|
+| Internet | Caddy | TCP 80/443; optional UDP 443 | HTTP redirect, HTTPS, HTTP/3 |
+| Caddy | Grafana | HTTP TCP 3000 | Reverse proxy |
+| Grafana | InfluxDB | HTTP TCP 8086 | Flux queries |
+| Telegraf | InfluxDB | HTTP TCP 8086 | Metrics ingestion |
+| Host loopback | Grafana | TCP 3000 | Private administration |
+| Host loopback | InfluxDB | TCP 8086 | Private database administration |
+
+Internal services use Docker DNS names (`grafana`, `influxdb`) on the `monitoring` bridge. By default Grafana and InfluxDB bind only to loopback; Telegraf has no published port. Caddy is enabled only with the `public` profile. Public TLS terminates at Caddy; internal HTTP remains on the Docker network. Host ports can be changed in `.env`; container ports remain unchanged.
 
 ## Prerequisites
 
