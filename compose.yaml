@@ -34,27 +34,20 @@ services:
     networks:
       - monitoring
 
-  telegraf:
-    image: telegraf:${TELEGRAF_VERSION:-latest}
+  prometheus:
+    build:
+      context: ./prometheus
+      args:
+        PROMETHEUS_VERSION: ${PROMETHEUS_VERSION:-latest}
     restart: unless-stopped
-    user: "0:0"
-    depends_on:
-      influxdb:
-        condition: service_healthy
     environment:
-      TZ: ${TZ:-Asia/Ho_Chi_Minh}
-      INFLUXDB_ORG: ${INFLUXDB_ORG:-monitoring}
-      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
-      INFLUXDB_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?Set INFLUXDB_ADMIN_TOKEN in .env}
-      TELEGRAF_HOSTNAME: ${TELEGRAF_HOSTNAME:-monitoring-host}
-      HOST_PROC: /host/proc
-      HOST_SYS: /host/sys
-      HOST_MOUNT_PREFIX: /hostfs
+      CONFIG_PASSWORD: ${PROMETHEUS_CONFIG_PASSWORD:?Set PROMETHEUS_CONFIG_PASSWORD in .env}
+    ports:
+      - "${PROMETHEUS_BIND_IP:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+      - "${PROMETHEUS_CONFIG_BIND_IP:-127.0.0.1}:${PROMETHEUS_CONFIG_PORT:-9091}:9091"
     volumes:
-      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/hostfs:ro
+      - prometheus_data:/prometheus
+      - prometheus_config:/config
     networks:
       - monitoring
 
@@ -111,5 +104,7 @@ volumes:
   influxdb_data:
   influxdb_config:
   grafana_data:
+  prometheus_data:
+  prometheus_config:
   caddy_data:
   caddy_config:

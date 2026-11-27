@@ -1,50 +1,21 @@
-# TIG Stack — Telegraf + InfluxDB 2.x + Grafana
+# Monitoring Stack — Prometheus + InfluxDB + Grafana
 
-A self-hosted Linux monitoring stack with Docker Compose, automatic Grafana **Flux** datasource and Linux dashboard provisioning, persistent storage, and optional HTTPS reverse proxy (Caddy).
+Docker Compose monitoring with Prometheus configuration management, persistent storage and optional Caddy HTTPS.
 
 ## Architecture and network topology
 
 ```mermaid
-flowchart TD
-    U["Internet user"] -->|"HTTPS TCP 443 / HTTP TCP 80"| F["Host firewall / published ports"]
-    U -->|"Direct HTTP TCP 3000 - optional"| P["Host published Grafana port"]
-    P --> G
-    A["Administrator"] -->|"SSH tunnel"| L["Host loopback"]
-    subgraph H["Linux Docker host"]
-        M["Host metrics: CPU, RAM, disk, network"]
-        L
-        subgraph N["Docker bridge: monitoring"]
-            C["Caddy :80 / :443 - optional public profile"]
-            G["Grafana :3000"]
-            T["Telegraf - collector"]
-            I["InfluxDB :8086"]
-            C -->|"HTTP :3000"| G
-            G -->|"Flux query / HTTP :8086"| I
-            T -->|"Write metrics / HTTP :8086"| I
-        end
-        M -->|"Read-only host mounts"| T
-        L -->|"127.0.0.1:3000"| G
-        L -->|"127.0.0.1:8086"| I
-        G --- GV[("grafana_data")]
-        I --- IV[("influxdb_data / influxdb_config")]
-        C --- CV[("caddy_data / caddy_config")]
-    end
-    F --> C
+flowchart LR
+  U[Administrator] -->|SSH tunnel 9091| M[Config Manager]
+  U -->|3000 or HTTPS| G[Grafana]
+  M -->|Validate and restart| P[Prometheus]
+  P -->|Scrape| E[Exporters]
+  G -->|PromQL 9090| P
+  G -->|Flux 8086| I[InfluxDB]
+  C[Caddy optional] --> G
 ```
 
-### Connection matrix
-
-| Source | Destination | Protocol / default port | Purpose |
-|---|---|---|---|
-| Remote client | Grafana | HTTP TCP 3000 | Optional direct IP access |
-| Internet | Caddy | TCP 80/443; optional UDP 443 | HTTP redirect, HTTPS, HTTP/3 |
-| Caddy | Grafana | HTTP TCP 3000 | Reverse proxy |
-| Grafana | InfluxDB | HTTP TCP 8086 | Flux queries |
-| Telegraf | InfluxDB | HTTP TCP 8086 | Metrics ingestion |
-| Host loopback | Grafana | TCP 3000 | Private administration |
-| Host loopback | InfluxDB | TCP 8086 | Private database administration |
-
-Internal services use Docker DNS names (`grafana`, `influxdb`) on the `monitoring` bridge. By default Grafana and InfluxDB bind only to loopback; Telegraf has no published port. Caddy is enabled only with the `public` profile. Public TLS terminates at Caddy; internal HTTP remains on the Docker network. Host ports can be changed in `.env`; container ports remain unchanged.
+Prometheus and its manager bind to loopback by default. The manager runs in the Prometheus container as an unprivileged process supervisor, without Docker socket access. Only Grafana is exposed by Caddy.
 
 ## Prerequisites
 
@@ -63,9 +34,10 @@ openssl rand -hex 32  # GRAFANA_ADMIN_PASSWORD
 openssl rand -hex 32  # INFLUXDB_PASSWORD
 openssl rand -hex 48  # INFLUXDB_ADMIN_TOKEN
 chmod 600 .env
+openssl rand -hex 32  # PROMETHEUS_CONFIG_PASSWORD
 nano .env
 docker compose config --quiet
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
 
@@ -76,7 +48,7 @@ ssh -L 3000:127.0.0.1:3000 user@SERVER_IP
 # http://localhost:3000
 ```
 
-Log in with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD`. Grafana preconfigures the `InfluxDB-Flux` datasource and **TIG Stack - Linux Host** dashboard, collecting CPU, RAM, disk and network metrics. After startup, give Telegraf 10–30 seconds to write metrics.
+Log in with Grafana credentials. Prometheus is the default datasource; InfluxDB remains available for historical data.
 
 ## Direct IP deployment (no domain)
 
@@ -128,7 +100,6 @@ Open `https://grafana.example.com`. Caddy manages public TLS certificates automa
 | `INFLUXDB_ADMIN_TOKEN` | placeholder | InfluxDB operator token used for provisioning |
 | `INFLUXDB_ORG`, `INFLUXDB_BUCKET` | `monitoring`, `telegraf` | InfluxDB org and bucket |
 | `INFLUXDB_RETENTION` | `30d` | Initial bucket retention |
-| `TELEGRAF_HOSTNAME` | `monitoring-host` | Host metric label |
 | `PUBLIC_DOMAIN` | `grafana.example.com` | HTTPS public domain |
 | `GRAFANA_ROOT_URL` | `http://localhost:3000` | External Grafana URL; change in public mode |
 | `PUBLIC_HTTP_PORT`, `PUBLIC_HTTPS_PORT` | `80`, `443` | Caddy published ports |
@@ -143,7 +114,7 @@ Leave version variables empty or omit them to use floating tags:
 | Variable | Effective default |
 |---|---|
 | INFLUXDB_VERSION | 2 (latest available 2.x tag) |
-| TELEGRAF_VERSION | latest |
+| PROMETHEUS_VERSION | latest |
 | GRAFANA_VERSION | latest |
 | CADDY_VERSION | latest |
 
@@ -159,32 +130,17 @@ docker compose --profile public up -d
 
 ## Cold-start readiness
 
-InfluxDB health checks query the configured bucket with authentication through its Docker network address, rather than merely pinging localhost. This avoids marking the temporary loopback-only initialization server ready. The 120-second start period and 30 retries allow slower initial setup. Telegraf and Grafana still wait for InfluxDB readiness.
+InfluxDB health checks query the configured bucket with authentication through its Docker network address, rather than merely pinging localhost. This avoids marking the temporary loopback-only initialization server ready. The 120-second start period and 30 retries allow slower initial setup. Grafana still waits for InfluxDB readiness.
 
 If startup fails, inspect `docker compose logs --timestamps influxdb` and `docker inspect "$(docker compose ps -q influxdb)" --format '{{json .State.Health}}'`. Do not delete persistent volumes. Existing volumes must retain matching org, bucket and token settings.
 
-## Monitoring and operations
+## Prometheus configuration and migration
 
-Telegraf collects CPU, mem, disk, disk I/O, network, kernel, swap and system metrics. It mounts host `/proc`, `/sys` and `/` read-only and runs as root *inside its container* for collection; review this access in production. No Docker socket is mounted. Namespace restrictions can affect host-level network/disk metrics; verify observed series.
+Existing installations: add PROMETHEUS_CONFIG_PASSWORD (a new random secret of at least 16 characters) to .env before running docker compose up -d --build --remove-orphans. This removes the old Telegraf container without deleting InfluxDB data. Keep the existing bucket name and credentials. The legacy Linux dashboard is retained for historical metrics; new host metrics require external exporters such as node_exporter.
 
-```bash
-docker compose config --quiet
-docker compose ps
-docker compose logs --tail=100 influxdb telegraf grafana
-docker compose exec telegraf telegraf --test --config /etc/telegraf/telegraf.conf
-docker compose exec influxdb influx ping --host http://localhost:8086
-# No data? Check the Telegraf logs, datasource and bucket/retention settings.
-```
+Open an SSH tunnel: ssh -L 9091:127.0.0.1:9091 -L 9090:127.0.0.1:9090 user@SERVER_IP. Open http://localhost:9091 and authenticate as admin with PROMETHEUS_CONFIG_PASSWORD. Edit YAML, validate and save (restarts Prometheus), restart without editing, or roll back to the previous configuration. Restart interrupts scraping briefly. Configuration and TSDB are stored in named volumes. Back up both volumes. Do not expose the manager or Prometheus to the Internet; Basic authentication requires a trusted encrypted tunnel. Only trusted administrators may edit scrape targets and configuration.
 
-Upgrades: back up first, review image release notes, edit version pins in `.env`, then run:
-
-```bash
-docker compose pull
-docker compose up -d                    # private
-docker compose --profile public up -d   # public
-```
-
-For safe shutdown without deleting volumes: `docker compose down`.
+PROMETHEUS_VERSION defaults to latest; use an exact tag and rebuild with docker compose build --pull prometheus for upgrades. PROMETHEUS_BIND_IP/PORT default to 127.0.0.1/9090; PROMETHEUS_CONFIG_BIND_IP/PORT default to 127.0.0.1/9091.
 
 ## Backup and restore
 
