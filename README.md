@@ -28,14 +28,8 @@ Prometheus and its manager bind to loopback by default. The manager runs in the 
 ```bash
 git clone https://github.com/ryanit-sys/tig-stack.git
 cd tig-stack
-cp .env.example .env
-# Create three DIFFERENT secrets (paste into appropriate .env variables)
-openssl rand -hex 32  # GRAFANA_ADMIN_PASSWORD
-openssl rand -hex 32  # INFLUXDB_PASSWORD
-openssl rand -hex 48  # INFLUXDB_ADMIN_TOKEN
-chmod 600 .env
-openssl rand -hex 32  # PROMETHEUS_CONFIG_PASSWORD
-nano .env
+bash scripts/init-env.sh
+nano .env # optional settings
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
@@ -136,11 +130,13 @@ If startup fails, inspect `docker compose logs --timestamps influxdb` and `docke
 
 ## Prometheus configuration and migration
 
-Existing installations: add PROMETHEUS_CONFIG_PASSWORD (a new random secret of at least 16 characters) to .env before running docker compose up -d --build --remove-orphans. This removes the old Telegraf container without deleting InfluxDB data. Keep the existing bucket name and credentials. The legacy Linux dashboard is retained for historical metrics; new host metrics require external exporters such as node_exporter.
+Existing installations: run `bash scripts/init-env.sh` to generate a missing, short or placeholder Prometheus password without changing existing database credentials. Then run docker compose up -d --build --remove-orphans. This removes the old Telegraf container without deleting InfluxDB data. Keep the existing bucket name and credentials. The legacy Linux dashboard is retained for historical metrics; new host metrics require external exporters such as node_exporter.
 
 Open an SSH tunnel: ssh -L 9091:127.0.0.1:9091 -L 9090:127.0.0.1:9090 user@SERVER_IP. Open http://localhost:9091 and authenticate as admin with PROMETHEUS_CONFIG_PASSWORD. Edit YAML, validate and save (restarts Prometheus), restart without editing, or roll back to the previous configuration. Restart interrupts scraping briefly. Configuration and TSDB are stored in named volumes. Back up both volumes. Do not expose the manager or Prometheus to the Internet; Basic authentication requires a trusted encrypted tunnel. Only trusted administrators may edit scrape targets and configuration.
 
 PROMETHEUS_VERSION defaults to latest; use an exact tag and rebuild with docker compose build --pull prometheus for upgrades. PROMETHEUS_BIND_IP/PORT default to 127.0.0.1/9090; PROMETHEUS_CONFIG_BIND_IP/PORT default to 127.0.0.1/9091.
+
+If Prometheus logs show `Set a strong PROMETHEUS_CONFIG_PASSWORD`, run `bash scripts/init-env.sh` and `docker compose up -d --force-recreate prometheus`. Do not delete volumes. The helper requires Bash and OpenSSL; it does not rotate existing database credentials.
 
 ## Backup and restore
 

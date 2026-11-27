@@ -10,8 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          cp .env.example .env
-          sed -i "s/^PROMETHEUS_CONFIG_PASSWORD=.*/PROMETHEUS_CONFIG_PASSWORD=$(openssl rand -hex 32)/;s/^INFLUXDB_PASSWORD=.*/INFLUXDB_PASSWORD=$(openssl rand -hex 32)/;s/^INFLUXDB_ADMIN_TOKEN=.*/INFLUXDB_ADMIN_TOKEN=$(openssl rand -hex 48)/" .env
+          bash -n scripts/init-env.sh
+          bash scripts/init-env.sh
+          cp .env /tmp/env-before
+          bash scripts/init-env.sh
+          cmp .env /tmp/env-before
+          sed -i 's/^PROMETHEUS_CONFIG_PASSWORD=.*/PROMETHEUS_CONFIG_PASSWORD=CHANGE_ME/' .env
+          bash scripts/init-env.sh
+          diff <(grep -v '^PROMETHEUS_CONFIG_PASSWORD=' /tmp/env-before | sed '/^$/d') <(grep -v '^PROMETHEUS_CONFIG_PASSWORD=' .env | sed '/^$/d')
           python -m py_compile prometheus/manager.py
           docker compose config --quiet
           docker compose up -d --build --wait --wait-timeout 480
