@@ -130,7 +130,7 @@ docker compose --profile public up -d
 
 ## Cold-start readiness
 
-InfluxDB health checks query the configured bucket with authentication through its Docker network address, rather than merely pinging localhost. This avoids marking the temporary loopback-only initialization server ready. The 120-second start period and 30 retries allow slower initial setup. Grafana still waits for InfluxDB readiness.
+The healthcheck uses double-dollar escaping to defer environment expansion to the container shell, not Compose. InfluxDB health checks query the configured bucket with authentication through its Docker network address, rather than merely pinging localhost. This avoids marking the temporary loopback-only initialization server ready. The 120-second start period and 30 retries allow slower initial setup. Grafana still waits for InfluxDB readiness.
 
 If startup fails, inspect `docker compose logs --timestamps influxdb` and `docker inspect "$(docker compose ps -q influxdb)" --format '{{json .State.Health}}'`. Do not delete persistent volumes. Existing volumes must retain matching org, bucket and token settings.
 
