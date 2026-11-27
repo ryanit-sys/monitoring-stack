@@ -7,6 +7,8 @@ A self-hosted Linux monitoring stack with Docker Compose, automatic Grafana **Fl
 ```mermaid
 flowchart TD
     U["Internet user"] -->|"HTTPS TCP 443 / HTTP TCP 80"| F["Host firewall / published ports"]
+    U -->|"Direct HTTP TCP 3000 - optional"| P["Host published Grafana port"]
+    P --> G
     A["Administrator"] -->|"SSH tunnel"| L["Host loopback"]
     subgraph H["Linux Docker host"]
         M["Host metrics: CPU, RAM, disk, network"]
@@ -34,6 +36,7 @@ flowchart TD
 
 | Source | Destination | Protocol / default port | Purpose |
 |---|---|---|---|
+| Remote client | Grafana | HTTP TCP 3000 | Optional direct IP access |
 | Internet | Caddy | TCP 80/443; optional UDP 443 | HTTP redirect, HTTPS, HTTP/3 |
 | Caddy | Grafana | HTTP TCP 3000 | Reverse proxy |
 | Grafana | InfluxDB | HTTP TCP 8086 | Flux queries |
@@ -75,10 +78,31 @@ ssh -L 3000:127.0.0.1:3000 user@SERVER_IP
 
 Log in with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD`. Grafana preconfigures the `InfluxDB-Flux` datasource and **TIG Stack - Linux Host** dashboard, collecting CPU, RAM, disk and network metrics. After startup, give Telegraf 10–30 seconds to write metrics.
 
+## Direct IP deployment (no domain)
+
+Set these values in `.env` (replace the example IP with your server IP):
+
+```dotenv
+GRAFANA_BIND_IP=0.0.0.0
+GRAFANA_PORT=3000
+GRAFANA_ROOT_URL=http://192.0.2.10:3000/
+INFLUXDB_BIND_IP=127.0.0.1
+```
+
+```bash
+# Stop and remove Caddy if switching from domain mode.
+docker compose --profile public stop caddy
+docker compose --profile public rm -f caddy
+docker compose up -d
+docker compose ps
+```
+
+Access `http://SERVER_IP:3000/`. No DNS or Caddy is required. Use a specific host IP instead of 0.0.0.0 to limit listening interfaces. Allow the selected port only from trusted source networks using a Docker-aware firewall (Docker published ports may bypass UFW rules). Direct HTTP does not encrypt credentials or sessions; prefer VPN or HTTPS for Internet access. Keep InfluxDB private. If COMPOSE_PROFILES is set externally, remove public from it before starting direct mode.
+
 ## Public HTTPS deployment
 
 1. Create a DNS A record (and correctly routed AAAA if using IPv6) for your host, e.g. `grafana.example.com`.
-2. Edit `.env`: set `PUBLIC_DOMAIN=grafana.example.com` and `GRAFANA_ROOT_URL=https://grafana.example.com/`.
+2. Edit `.env`: set `PUBLIC_DOMAIN=grafana.example.com`, `GRAFANA_ROOT_URL=https://grafana.example.com/` and `GRAFANA_BIND_IP=127.0.0.1`.
 3. Allow inbound TCP 80/443, optional UDP 443. **Never expose InfluxDB 8086 publicly.**
 4. Run:
 
@@ -108,9 +132,30 @@ Open `https://grafana.example.com`. Caddy manages public TLS certificates automa
 | `PUBLIC_DOMAIN` | `grafana.example.com` | HTTPS public domain |
 | `GRAFANA_ROOT_URL` | `http://localhost:3000` | External Grafana URL; change in public mode |
 | `PUBLIC_HTTP_PORT`, `PUBLIC_HTTPS_PORT` | `80`, `443` | Caddy published ports |
-| `*_VERSION` | See `.env.example` | Container image versions |
+| `*_VERSION` | Empty | Latest image tags; InfluxDB defaults to 2.x |
 
 `DOCKER_INFLUXDB_INIT_*` variables only initialize a **new** InfluxDB volume. After first bootstrap, changing secrets, bucket, org or retention in `.env` does **not** modify persisted database settings. Rotate via InfluxDB API/UI and synchronize updated credentials across services. Grafana's environment admin password is similarly a first-run setting; reset existing credentials via Grafana's official UI/CLI. Never use `docker compose down -v` if persistent data matters.
+
+## Image version selection
+
+Leave version variables empty or omit them to use floating tags:
+
+| Variable | Effective default |
+|---|---|
+| INFLUXDB_VERSION | 2 (latest available 2.x tag) |
+| TELEGRAF_VERSION | latest |
+| GRAFANA_VERSION | latest |
+| CADDY_VERSION | latest |
+
+InfluxDB 3.x is not compatible with this stack's Flux datasource and 2.x initialization. Do not set INFLUXDB_VERSION to latest or a 3.x tag. For reproducible production deployments, specify tested exact tags, for example INFLUXDB_VERSION=2.7.11. Floating tags do not automatically upgrade running containers; explicitly pull and recreate after reviewing release notes and taking backups.
+
+```bash
+docker compose pull
+docker compose up -d
+# Domain mode instead:
+docker compose --profile public pull
+docker compose --profile public up -d
+```
 
 ## Monitoring and operations
 
