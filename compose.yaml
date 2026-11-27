@@ -1,0 +1,107 @@
+name: ${COMPOSE_PROJECT_NAME:-tig-stack}
+services:
+  influxdb:
+    image: influxdb:${INFLUXDB_VERSION:-2.7}
+    restart: unless-stopped
+    ports:
+      - "${INFLUXDB_BIND_IP:-127.0.0.1}:${INFLUXDB_PORT:-8086}:8086"
+    environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USERNAME:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD:?Set INFLUXDB_PASSWORD in .env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-monitoring}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
+      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUXDB_RETENTION:-30d}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?Set INFLUXDB_ADMIN_TOKEN in .env}
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping", "--host", "http://localhost:8086"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - monitoring
+
+  telegraf:
+    image: telegraf:${TELEGRAF_VERSION:-1.36}
+    restart: unless-stopped
+    user: "0:0"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-monitoring}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
+      INFLUXDB_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?Set INFLUXDB_ADMIN_TOKEN in .env}
+      TELEGRAF_HOSTNAME: ${TELEGRAF_HOSTNAME:-monitoring-host}
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+      HOST_MOUNT_PREFIX: /hostfs
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/hostfs:ro
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-12.2.0}
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    ports:
+      - "${GRAFANA_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      INFLUXDB_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?Set INFLUXDB_ADMIN_TOKEN in .env}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-monitoring}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-telegraf}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - monitoring
+
+  caddy:
+    image: caddy:${CADDY_VERSION:-2.10}
+    restart: unless-stopped
+    profiles: ["public"]
+    depends_on:
+      - grafana
+    ports:
+      - "${PUBLIC_HTTP_PORT:-80}:80"
+      - "${PUBLIC_HTTPS_PORT:-443}:443"
+      - "${PUBLIC_HTTPS_PORT:-443}:443/udp"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-grafana.example.com}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  influxdb_data:
+  influxdb_config:
+  grafana_data:
+  caddy_data:
+  caddy_config:
