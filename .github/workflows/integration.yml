@@ -1,0 +1,71 @@
+name: TIG integration
+on:
+  push:
+    branches: ['test/tig-integration']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [private, direct, proxy]
+        versions: [floating, pinned]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: bash
+        run: |
+          cp .env.example .env
+          sed -i "s/^GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 32)/;s/^INFLUXDB_PASSWORD=.*/INFLUXDB_PASSWORD=$(openssl rand -hex 32)/;s/^INFLUXDB_ADMIN_TOKEN=.*/INFLUXDB_ADMIN_TOKEN=$(openssl rand -hex 48)/" .env
+          if [[ "${{ matrix.versions }}" == pinned ]]; then
+            sed -i 's/^INFLUXDB_VERSION=.*/INFLUXDB_VERSION=2.7/;s/^TELEGRAF_VERSION=.*/TELEGRAF_VERSION=1.36/;s/^GRAFANA_VERSION=.*/GRAFANA_VERSION=12.2.0/;s/^CADDY_VERSION=.*/CADDY_VERSION=2.10/' .env
+          fi
+          if [[ "${{ matrix.mode }}" == direct ]]; then
+            sed -i 's/^GRAFANA_BIND_IP=.*/GRAFANA_BIND_IP=0.0.0.0/' .env
+          fi
+          if [[ "${{ matrix.mode }}" == proxy ]]; then
+            sed -i 's/^PUBLIC_DOMAIN=.*/PUBLIC_DOMAIN=localhost/;s|^GRAFANA_ROOT_URL=.*|GRAFANA_ROOT_URL=https://localhost/|' .env
+            echo COMPOSE_PROFILES=public >> "$GITHUB_ENV"
+          fi
+          docker compose config --quiet
+      - name: Start and verify
+        shell: bash
+        run: |
+          set -a; source .env; set +a
+          docker compose pull
+          docker compose up -d --wait --wait-timeout 180
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then break; fi
+            sleep 3
+          done
+          curl -fsS http://127.0.0.1:3000/api/health
+          curl -fsS http://127.0.0.1:8086/health
+          for i in {1..30}; do
+            if docker compose exec -T influxdb influx query --host http://localhost:8086 --org "$INFLUXDB_ORG" --token "$INFLUXDB_ADMIN_TOKEN" "from(bucket: \"$INFLUXDB_BUCKET\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"cpu\") |> limit(n: 1)" | grep -q usage; then break; fi
+            sleep 5
+          done
+          docker compose exec -T influxdb influx query --host http://localhost:8086 --org "$INFLUXDB_ORG" --token "$INFLUXDB_ADMIN_TOKEN" "from(bucket: \"$INFLUXDB_BUCKET\") |> range(start: -5m) |> filter(fn: (r) => r._measurement == \"cpu\") |> limit(n: 1)" | grep -q usage
+          curl -fsS -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" http://127.0.0.1:3000/api/dashboards/uid/tig-linux-host | jq -e '.dashboard.uid == "tig-linux-host"'
+          curl -fsS -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" http://127.0.0.1:3000/api/datasources/uid/influxdb-flux/health | jq -e '.status == "OK"'
+          if [[ "${{ matrix.mode }}" == proxy ]]; then
+            curl -kfsS --retry 15 --retry-all-errors https://localhost/api/health
+          fi
+          docker compose port grafana 3000 | grep -F "$GRAFANA_BIND_IP:"
+          docker compose port influxdb 8086 | grep -F '127.0.0.1:'
+      - name: Persistence and backup
+        run: |
+          docker compose down
+          docker compose up -d --wait --wait-timeout 180
+          bash scripts/backup.sh
+          test -n "$(find backups -type f -name '*.manifest' -print -quit)"
+      - name: Diagnostics and cleanup
+        if: always()
+        run: |
+          docker compose ps
+          docker compose logs --tail=100
+          docker compose down -v
