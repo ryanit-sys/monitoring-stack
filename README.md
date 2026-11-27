@@ -157,6 +157,12 @@ docker compose --profile public pull
 docker compose --profile public up -d
 ```
 
+## Cold-start readiness
+
+InfluxDB health checks query the configured bucket with authentication through its Docker network address, rather than merely pinging localhost. This avoids marking the temporary loopback-only initialization server ready. The 120-second start period and 30 retries allow slower initial setup. Telegraf and Grafana still wait for InfluxDB readiness.
+
+If startup fails, inspect `docker compose logs --timestamps influxdb` and `docker inspect "$(docker compose ps -q influxdb)" --format '{{json .State.Health}}'`. Do not delete persistent volumes. Existing volumes must retain matching org, bucket and token settings.
+
 ## Monitoring and operations
 
 Telegraf collects CPU, mem, disk, disk I/O, network, kernel, swap and system metrics. It mounts host `/proc`, `/sys` and `/` read-only and runs as root *inside its container* for collection; review this access in production. No Docker socket is mounted. Namespace restrictions can affect host-level network/disk metrics; verify observed series.
