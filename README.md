@@ -26,8 +26,8 @@ Prometheus and its manager bind to loopback by default. The manager runs in the 
 ## Private deployment
 
 ```bash
-git clone https://github.com/ryanit-sys/tig-stack.git
-cd tig-stack
+git clone https://github.com/ryanit-sys/monitoring-stack.git
+cd monitoring-stack
 bash scripts/init-env.sh
 nano .env # optional settings
 docker compose config --quiet
@@ -130,7 +130,9 @@ If startup fails, inspect `docker compose logs --timestamps influxdb` and `docke
 
 ## Prometheus configuration and migration
 
-Existing installations: run `bash scripts/init-env.sh` to generate a missing, short or placeholder Prometheus password without changing existing database credentials. Then run docker compose up -d --build --remove-orphans. This removes the old Telegraf container without deleting InfluxDB data. Keep the existing bucket name and credentials. The legacy Linux dashboard is retained for historical metrics; new host metrics require external exporters such as node_exporter.
+Existing installations: first back up InfluxDB, Grafana and `.env`, and verify the existing Compose project name with `docker compose ls`. Preserve that name (set `COMPOSE_PROJECT_NAME` explicitly if needed) and inspect the existing named volumes before upgrading. Never run `down -v`. Record a historical Flux query result before upgrading and compare it afterwards. The integration test checks cold start and data persistence across container recreation; this is not a substitute for a legacy migration rehearsal.
+
+Then run `bash scripts/init-env.sh` to generate a missing, short or placeholder Prometheus password without changing existing database credentials. Then run docker compose up -d --build --remove-orphans. This removes the old Telegraf container without deleting InfluxDB data. Keep the existing bucket name and credentials. The legacy Linux dashboard is retained for historical metrics; new host metrics require external exporters such as node_exporter.
 
 Open an SSH tunnel: ssh -L 9091:127.0.0.1:9091 -L 9090:127.0.0.1:9090 user@SERVER_IP. Open http://localhost:9091 and authenticate as admin with PROMETHEUS_CONFIG_PASSWORD. Edit YAML, validate and save (restarts Prometheus), restart without editing, or roll back to the previous configuration. Restart interrupts scraping briefly. Configuration and TSDB are stored in named volumes. Back up both volumes. Do not expose the manager or Prometheus to the Internet; Basic authentication requires a trusted encrypted tunnel. Only trusted administrators may edit scrape targets and configuration.
 
