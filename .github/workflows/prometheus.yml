@@ -28,10 +28,22 @@ jobs:
           curl -fsS -u "admin:$PROMETHEUS_CONFIG_PASSWORD" http://localhost:9091 > /tmp/page
           csrf=$(sed -n 's/.*name=csrf value="\([^"]*\)".*/\1/p' /tmp/page)
           test -n "$csrf"
+          for bad in '' 'csrf=wrong&'; do
+            test "$(curl -s -o /dev/null -w '%{http_code}' -u "admin:$PROMETHEUS_CONFIG_PASSWORD" -d "${bad}action=restart" http://localhost:9091)" = 403
+          done
+          docker compose exec -T prometheus cat /config/prometheus.yml > /tmp/config-before
           test "$(curl -s -o /dev/null -w '%{http_code}' -u "admin:$PROMETHEUS_CONFIG_PASSWORD" -d "csrf=$csrf&action=save&config=invalid" http://localhost:9091)" = 400
-          curl -fsS -u "admin:$PROMETHEUS_CONFIG_PASSWORD" --data-urlencode "csrf=$csrf" --data-urlencode action=save --data-urlencode config@prometheus/default.yml http://localhost:9091
+          cp /tmp/config-before /tmp/config-new
+          printf '\n# CI rollback marker\n' >> /tmp/config-new
+          curl -fsS -u "admin:$PROMETHEUS_CONFIG_PASSWORD" --data-urlencode "csrf=$csrf" --data-urlencode action=save --data-urlencode config@/tmp/config-new http://localhost:9091
+          docker compose exec -T prometheus cat /config/prometheus.yml | cmp /tmp/config-new -
           curl -fsS -u "admin:$PROMETHEUS_CONFIG_PASSWORD" -d "csrf=$csrf&action=restart" http://localhost:9091
           curl -fsS -u "admin:$PROMETHEUS_CONFIG_PASSWORD" -d "csrf=$csrf&action=rollback" http://localhost:9091
+          docker compose exec -T prometheus cat /config/prometheus.yml | cmp /tmp/config-before -
+          docker compose exec -T influxdb influx write --host http://influxdb:8086 --org "$INFLUXDB_ORG" --bucket "$INFLUXDB_BUCKET" --token "$INFLUXDB_ADMIN_TOKEN" 'ci_persistence value=42i'
+          docker compose up -d --force-recreate --wait --wait-timeout 480
+          docker compose exec -T influxdb influx query --host http://influxdb:8086 --org "$INFLUXDB_ORG" --token "$INFLUXDB_ADMIN_TOKEN" --raw "from(bucket: \"$INFLUXDB_BUCKET\") |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"ci_persistence\")" | grep -q ',42,'
+          docker compose exec -T prometheus cat /config/prometheus.yml | cmp /tmp/config-before -
           sleep 20
           curl -fsS 'http://localhost:9090/api/v1/query?query=up' | jq -e '.data.result | any(.value[1]=="1")'
           curl -fsS --retry 20 --retry-all-errors -u "$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" http://localhost:3000/api/datasources/uid/prometheus/health | jq -e '.status=="OK"'
